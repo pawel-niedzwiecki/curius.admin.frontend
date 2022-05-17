@@ -105,7 +105,7 @@ const CurrencySettings = () => {
           className={"h-auto max-h-full"}
         >
           <Select
-            label="Default store currency"
+            label="Default store currencyy"
             options={storeCurrencies} // You are only allow to choose default currency from store currencies
             value={selectedCurrency}
             isMultiSelect={false}
