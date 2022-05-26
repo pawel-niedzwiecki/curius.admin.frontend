@@ -27,6 +27,7 @@ const InvitePage = ({ location }) => {
   const [signUp, setSignUp] = useState(false)
 
   let token: Object | null = null
+
   if (parsed?.token) {
     try {
       token = decodeToken(parsed.token as string)
