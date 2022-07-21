@@ -1,10 +1,11 @@
+import { LineItem as RawLineItem, Order } from "@medusajs/medusa"
 import { useAdminRequestReturn, useAdminShippingOptions } from "medusa-react"
 import React, { useContext, useEffect, useState } from "react"
 import Spinner from "../../../../components/atoms/spinner"
 import Button from "../../../../components/fundamentals/button"
 import CheckIcon from "../../../../components/fundamentals/icons/check-icon"
 import EditIcon from "../../../../components/fundamentals/icons/edit-icon"
-import InfoTooltip from "../../../../components/molecules/info-tooltip"
+import IconTooltip from "../../../../components/molecules/icon-tooltip"
 import Modal from "../../../../components/molecules/modal"
 import LayeredModal, {
   LayeredModalContext,
@@ -13,27 +14,39 @@ import RMAShippingPrice from "../../../../components/molecules/rma-select-shippi
 import Select from "../../../../components/molecules/select"
 import CurrencyInput from "../../../../components/organisms/currency-input"
 import RMASelectProductTable from "../../../../components/organisms/rma-select-product-table"
+import useNotification from "../../../../hooks/use-notification"
+import { Option } from "../../../../types/shared"
 import { getErrorMessage } from "../../../../utils/error-messages"
 import { displayAmount } from "../../../../utils/prices"
 import { removeNullish } from "../../../../utils/remove-nullish"
 import { filterItems } from "../utils/create-filtering"
 
-const ReturnMenu = ({ order, onDismiss, notification }) => {
+type ReturnMenuProps = {
+  order: Order
+  onDismiss: () => void
+}
+
+type LineItem = Omit<RawLineItem, "beforeInsert">
+
+const ReturnMenu: React.FC<ReturnMenuProps> = ({ order, onDismiss }) => {
   const layoutmodalcontext = useContext(LayeredModalContext)
 
   const [submitting, setSubmitting] = useState(false)
   const [refundEdited, setRefundEdited] = useState(false)
   const [refundable, setRefundable] = useState(0)
   const [refundAmount, setRefundAmount] = useState(0)
-  const [toReturn, setToReturn] = useState({})
-  const [quantities, setQuantities] = useState({})
+  const [toReturn, setToReturn] = useState<
+    Record<string, { quantity: number }>
+  >({})
   const [useCustomShippingPrice, setUseCustomShippingPrice] = useState(false)
 
   const [noNotification, setNoNotification] = useState(order.no_notification)
   const [shippingPrice, setShippingPrice] = useState<number>()
-  const [shippingMethod, setShippingMethod] = useState(null)
+  const [shippingMethod, setShippingMethod] = useState<Option | null>(null)
 
-  const [allItems, setAllItems] = useState<any[]>([])
+  const [allItems, setAllItems] = useState<Omit<LineItem, "beforeInsert">[]>([])
+
+  const notification = useNotification()
 
   const requestReturnOrder = useAdminRequestReturn(order.id)
 
@@ -52,22 +65,23 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
   })
 
   useEffect(() => {
-    const items = Object.keys(toReturn).map((t) =>
-      allItems.find((i) => i.id === t)
-    )
-    const total =
-      items.reduce((acc, next) => {
-        return (
-          acc +
-          (next.refundable / (next.quantity - next.returned_quantity)) *
-            toReturn[next.id].quantity
-        )
-      }, 0) - (shippingPrice || 0)
+    const items = Object.keys(toReturn)
+      .map((t) => allItems.find((i) => i.id === t))
+      .filter((i) => typeof i !== "undefined") as LineItem[]
+
+    const itemTotal = items.reduce((acc: number, curr: LineItem): number => {
+      const unitRefundable =
+        (curr.refundable || 0) / (curr.quantity - curr.returned_quantity)
+
+      return acc + unitRefundable * toReturn[curr.id].quantity
+    }, 0)
+
+    const total = itemTotal - (shippingPrice || 0)
 
     setRefundable(total)
 
     setRefundAmount(total)
-  }, [toReturn, quantities, shippingPrice])
+  }, [toReturn, shippingPrice])
 
   const onSubmit = async () => {
     const items = Object.entries(toReturn).map(([key, value]) => {
@@ -91,9 +105,13 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
     }
 
     if (shippingMethod) {
+      const taxRate = shippingMethod.tax_rates.reduce((acc, curr) => {
+        return acc + curr.rate / 100
+      }, 0)
+
       data.return_shipping = {
         option_id: shippingMethod.value,
-        price: shippingPrice / (1 + order.tax_rate / 100),
+        price: shippingPrice ? Math.round(shippingPrice / (1 + taxRate)) : 0,
       }
     }
 
@@ -115,20 +133,21 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
   }
 
   const handleShippingSelected = (selectedItem) => {
-    if (selectedItem.value !== "Add a shipping method") {
-      setShippingMethod(selectedItem)
-      const method = shippingOptions.find((o) => selectedItem.value === o.id)
-      setShippingPrice(method.amount * (1 + order.tax_rate / 100))
-    } else {
-      setShippingMethod(null)
-      setShippingPrice(0)
+    setShippingMethod(selectedItem)
+    const method = shippingOptions?.find((o) => selectedItem.value === o.id)
+
+    if (method) {
+      setShippingPrice(method.price_incl_tax)
     }
   }
 
   useEffect(() => {
     if (!useCustomShippingPrice && shippingMethod) {
-      const method = shippingOptions.find((o) => shippingMethod.value === o.id)
-      setShippingPrice(method.amount * (1 + order.tax_rate / 100))
+      const method = shippingOptions?.find((o) => shippingMethod.value === o.id)
+
+      if (method) {
+        setShippingPrice(method.price_incl_tax)
+      }
     }
   }, [useCustomShippingPrice, shippingMethod])
 
@@ -152,8 +171,6 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
               allItems={allItems}
               toReturn={toReturn}
               setToReturn={(items) => setToReturn(items)}
-              quantities={quantities}
-              setQuantities={setQuantities}
             />
           </div>
 
@@ -170,17 +187,21 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
                 placeholder="Add a shipping method"
                 value={shippingMethod}
                 onChange={handleShippingSelected}
-                options={shippingOptions.map((o) => ({
-                  label: o.name,
-                  value: o.id,
-                }))}
+                options={
+                  shippingOptions?.map((o) => ({
+                    label: o.name,
+                    value: o.id,
+                    tax_rates: o.tax_rates
+                  })) || []
+                }
               />
             )}
             {shippingMethod && (
               <RMAShippingPrice
+                inclTax
                 useCustomShippingPrice={useCustomShippingPrice}
                 shippingPrice={shippingPrice}
-                currency_code={order.currency_code}
+                currencyCode={order.currency_code}
                 updateShippingPrice={handleUpdateShippingPrice}
                 setUseCustomShippingPrice={setUseCustomShippingPrice}
               />
@@ -193,7 +214,7 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
                 <div className="flex mb-4 inter-small-regular justify-between">
                   <span>Shipping</span>
                   <div>
-                    {displayAmount(order.currency_code, shippingPrice)}{" "}
+                    {displayAmount(order.currency_code, shippingPrice || 0)}{" "}
                     <span className="text-grey-40 ml-3">
                       {order.currency_code.toUpperCase()}
                     </span>
@@ -261,7 +282,7 @@ const ReturnMenu = ({ order, onDismiss, notification }) => {
               />
               <span className="ml-3 flex items-center text-grey-90 gap-x-xsmall">
                 Send notifications
-                <InfoTooltip content="Notify customer of created return" />
+                <IconTooltip content="Notify customer of created return" />
               </span>
             </div>
             <div className="flex gap-x-xsmall">
