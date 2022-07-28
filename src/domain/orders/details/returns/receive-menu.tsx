@@ -1,23 +1,34 @@
-import React, { useMemo, useEffect, useState } from "react"
-import { LineItem, ReturnItem } from "@medusajs/medusa"
+import {
+  LineItem as RawLineItem,
+  Order,
+  Return,
+  ReturnItem,
+} from "@medusajs/medusa"
+import React, { useEffect, useMemo, useState } from "react"
 import Button from "../../../../components/fundamentals/button"
 import EditIcon from "../../../../components/fundamentals/icons/edit-icon"
 import Modal from "../../../../components/molecules/modal"
 import CurrencyInput from "../../../../components/organisms/currency-input"
-import RMASelectProductTable from "../../../../components/organisms/rma-select-product-table"
+import RMASelectReturnProductTable from "../../../../components/organisms/rma-select-receive-product-table"
+import useNotification from "../../../../hooks/use-notification"
 import { getErrorMessage } from "../../../../utils/error-messages"
 import { displayAmount } from "../../../../utils/prices"
 
+type Item = {
+  item_id: string
+  quantity: number
+}
+
 type ReceiveMenuProps = {
-  order: any
-  returnRequest: any
+  order: Omit<Order, "beforeInsert">
+  returnRequest: Omit<Return, "beforeInsert">
   onDismiss: () => void
-  onReceiveSwap?: (payload: any) => Promise<void>
-  onReceiveReturn?: (id: string, payload: any) => Promise<void>
-  notification: any
-  isSwapOrClaim?: boolean
+  onReceiveSwap?: (items: Item[]) => Promise<void>
+  onReceiveReturn?: (items: Item[], refund?: number) => Promise<void>
   refunded?: boolean
 }
+
+type LineItem = Omit<RawLineItem, "beforeInsert">
 
 const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
   order,
@@ -25,85 +36,106 @@ const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
   onReceiveReturn,
   onReceiveSwap,
   onDismiss,
-  notification,
-  isSwapOrClaim,
   refunded,
 }) => {
   const [submitting, setSubmitting] = useState(false)
   const [refundEdited, setRefundEdited] = useState(false)
   const [refundAmount, setRefundAmount] = useState(0)
-  const [toReturn, setToReturn] = useState({})
-  const [quantities, setQuantities] = useState({})
+  const [toReturn, setToReturn] = useState<
+    Record<string, { quantity: number }>
+  >({})
 
-  const allItems: LineItem[] = useMemo(() => {
-    return order.items.map((i: LineItem) => {
-      const found = returnRequest.items.find(
-        (ri: ReturnItem) => ri.item_id === i.id
-      )
+  const notification = useNotification()
 
-      if (found) {
-        return {
-          ...i,
-          quantity: found.quantity,
-        }
-      } else {
-        return null
+  const allItems: Omit<LineItem, "beforeInsert">[] = useMemo(() => {
+    const idLookUp = returnRequest.items.map((i) => i.item_id)
+
+    let allItems = [...order.items]
+
+    if (order.swaps && order.swaps.length) {
+      for (const swap of order.swaps) {
+        allItems = [...allItems, ...swap.additional_items]
       }
-    }).filter(Boolean)
-  }, [order])
+    }
+
+    if (order.claims && order.claims.length) {
+      for (const claim of order.claims) {
+        allItems = [...allItems, ...claim.additional_items]
+      }
+    }
+
+    const withAdjustedQuantity = allItems
+      .filter((i) => idLookUp.includes(i.id))
+
+    return withAdjustedQuantity
+  }, [order, returnRequest])
 
   useEffect(() => {
-    const returns = []
-    let qty = {}
+    const returns = {}
+
     returnRequest.items.forEach((i: ReturnItem) => {
       const item = allItems.find((l) => l.id === i.item_id)
       if (item && item.quantity - item.returned_quantity > 0) {
-        returns[i.item_id] = item
-        qty = {
-          ...qty,
-          [i.item_id]: i.quantity,
+        returns[i.item_id] = {
+          ...item,
+          quantity: returnRequest.items.find((i) => i.item_id === item.id)?.quantity
         }
       }
     })
 
     setToReturn(returns)
-    setQuantities(qty)
   }, [allItems])
+
+  const shippingTaxRate = useMemo(() => {
+    return returnRequest.shipping_method.tax_lines.reduce((acc, curr) => {
+      return acc + curr.rate
+    }, 0)
+  }, [returnRequest])
 
   useEffect(() => {
     if (!Object.entries(toReturn).length) {
+      setRefundAmount(0)
       return
     }
 
-    const items = Object.keys(toReturn).map((t) =>
-      allItems.find((i) => i.id === t)
-    )
+    const items = Object.keys(toReturn)
+      .map((t) => ({
+        ...allItems.find((i) => i.id === t),
+      }))
+      .filter((i) => typeof i !== "undefined") as LineItem[]
 
-    const total =
-      items.reduce((acc, next) => {
-        return acc + ((next.refundable || 0) / next.quantity) * quantities[next.id]
-      }, 0) -
-      ((returnRequest.shipping_method &&
-        returnRequest.shipping_method.price * (1 + order.tax_rate / 100)) ||
-        0)
+    const itemTotal = items.reduce((acc: number, curr: LineItem): number => {
+      const unitRefundable =
+        (curr.refundable || 0) / (curr.quantity - curr.returned_quantity)
+
+      return acc + unitRefundable * toReturn[curr.id].quantity
+    }, 0)
+
+    const shippingTotal =
+      (returnRequest.shipping_method &&
+        returnRequest.shipping_method.price *
+          (1 + shippingTaxRate / 100)) ||
+      0
+
+    const total = itemTotal - shippingTotal
 
     if (!refundEdited || total < refundAmount) {
       setRefundAmount(refundAmount < 0 ? 0 : total)
     }
-  }, [toReturn, quantities])
+  }, [toReturn, shippingTaxRate])
 
   const onSubmit = () => {
     const items = Object.keys(toReturn).map((k) => ({
       item_id: k,
-      quantity: quantities[k],
+      quantity: toReturn[k].quantity,
     }))
 
-    if (returnRequest.is_swap && onReceiveSwap) {
+    if (returnRequest.swap_id && onReceiveSwap) {
       setSubmitting(true)
       return onReceiveSwap(items)
         .then(() => onDismiss())
         .then(() =>
-          notification("Success", "Successfully returned order", "success")
+          notification("Success", "Successfully received return", "success")
         )
         .catch((error) =>
           notification("Error", getErrorMessage(error), "error")
@@ -111,12 +143,9 @@ const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
         .finally(() => setSubmitting(false))
     }
 
-    if (!returnRequest.is_swap && onReceiveReturn) {
+    if (!returnRequest.swap_id && onReceiveReturn) {
       setSubmitting(true)
-      return onReceiveReturn(returnRequest.id, {
-        items,
-        refund: Math.round(refundAmount),
-      })
+      return onReceiveReturn(items, Math.round(refundAmount))
         .then(() => onDismiss())
         .then(() =>
           notification("Success", "Successfully returned order", "success")
@@ -128,10 +157,13 @@ const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
     }
   }
 
-  const handleRefundUpdated = (value) => {
-    setRefundEdited(true)
+  const handleRefundUpdated = (value: number | undefined) => {
+    if (!value) {
+      return
+    }
 
     if (value < order.refundable_amount && value >= 0) {
+      setRefundEdited(true)
       setRefundAmount(value)
     }
   }
@@ -144,15 +176,14 @@ const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
         </Modal.Header>
         <Modal.Content>
           <h3 className="inter-base-semibold">Items to receive</h3>
-          <RMASelectProductTable
+          <RMASelectReturnProductTable
             order={order}
             allItems={allItems}
             toReturn={toReturn}
             setToReturn={(items) => setToReturn(items)}
-            isSwapOrClaim={isSwapOrClaim}
           />
 
-          {!returnRequest.is_swap && (
+          {!returnRequest.swap_id && (
             <>
               {returnRequest.shipping_method &&
                 returnRequest.shipping_method.price !== undefined && (
@@ -161,7 +192,7 @@ const ReceiveMenu: React.FC<ReceiveMenuProps> = ({
                     <span>
                       {(
                         (returnRequest.shipping_method.price / 100) *
-                        (1 + order.tax_rate / 100)
+                        (1 + shippingTaxRate / 100)
                       ).toFixed(2)}{" "}
                       <span className="text-grey-50">
                         {order.currency_code.toUpperCase()}

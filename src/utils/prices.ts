@@ -1,3 +1,4 @@
+import { LineItemTaxLine, MoneyAmount, Order } from "@medusajs/medusa"
 import { currencies } from "./currencies"
 
 export function normalizeAmount(currency: string, amount: number): number {
@@ -80,7 +81,7 @@ type FormatMoneyProps = {
   amount: number
   currency: string
   digits?: number
-  tax?: number
+  tax?: number | LineItemTaxLine[]
 }
 
 export function formatAmountWithSymbol({
@@ -100,9 +101,29 @@ export function formatAmountWithSymbol({
 
   const normalizedAmount = normalizeAmount(currency, amount)
 
+  const taxRate =
+    tax instanceof Array ? tax.reduce((acc, curr) => acc + curr.rate, 0) : tax
+
   return new Intl.NumberFormat(locale, {
     style: "currency",
     currency,
     minimumFractionDigits: digits,
-  }).format(normalizedAmount * (1 + tax / 100))
+  }).format(normalizedAmount * (1 + taxRate / 100))
+}
+
+export const extractNormalizedAmount = (
+  amounts: Omit<MoneyAmount, "beforeInsert">[],
+  order: Omit<Order, "beforeInsert">
+) => {
+  let amount = amounts.find((ma) => ma.region_id === order.region_id)
+
+  if (!amount) {
+    amount = amounts.find((ma) => ma.currency_code === order.currency_code)
+  }
+
+  if (amount) {
+    return normalizeAmount(order.currency_code, amount.amount)
+  }
+
+  return 0
 }

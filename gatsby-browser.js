@@ -8,7 +8,6 @@ import { AccountProvider } from "./src/context/account"
 import { CacheProvider } from "./src/context/cache"
 import { InterfaceProvider } from "./src/context/interface"
 import { medusaUrl, queryClient } from "./src/services/config"
-import { ThemeProvider as Provider } from "./src/theme"
 
 export const wrapPageElement = ({ element }) => {
   return (
@@ -20,13 +19,11 @@ export const wrapPageElement = ({ element }) => {
     >
       <CacheProvider>
         <AccountProvider>
-          <InterfaceProvider>
-            <SteppedProvider>
-              <LayeredModalProvider>
-                <Provider>{element}</Provider>
-              </LayeredModalProvider>
-            </SteppedProvider>
-          </InterfaceProvider>
+            <InterfaceProvider>
+              <SteppedProvider>
+                <LayeredModalProvider>{element}</LayeredModalProvider>
+              </SteppedProvider>
+            </InterfaceProvider>
         </AccountProvider>
       </CacheProvider>
     </MedusaProvider>
